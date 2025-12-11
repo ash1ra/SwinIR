@@ -1,0 +1,7 @@
+[project]
+name = "swinir"
+version = "0.1.0"
+description = "Swin Transformer using PyTorch"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
