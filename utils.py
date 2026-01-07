@@ -3,18 +3,36 @@ from torch import Tensor
 
 
 def split_img_into_windows(img_tensor: Tensor, window_size: int) -> Tensor:
+    """
+    Einops variables:
+        b = batch size
+        nw_h = number of windows (height)
+        nw_w = number of windows (width)
+        ws_h = window size (height)
+        ws_w = window size (width)
+        c = channels
+    """
     return rearrange(
         img_tensor,
-        "b (h gh) (w gw) c -> (b h w) gh gw c",
-        gh=window_size,
-        gw=window_size,
+        "b (nw_h ws_h) (nw_w ws_w) c -> (b nw_h nw_w) ws_h ws_w c",
+        ws_h=window_size,
+        ws_w=window_size,
     )
 
 
 def combine_windows_into_img(windows_tensor: Tensor, img_height: int, img_width: int) -> Tensor:
+    """
+    Einops variables:
+        b = batch size
+        nw_h = number of windows (height)
+        nw_w = number of windows (width)
+        ws_h = window size (height)
+        ws_w = window size (width)
+        c = channels
+    """
     return rearrange(
         windows_tensor,
-        "(b h w) gh gw c -> b (h gh) (w gw) c",
-        h=img_height // windows_tensor.shape[1],
-        w=img_width // windows_tensor.shape[2],
+        "(b nw_h nw_w) ws_h ws_w c -> b (nw_h ws_h) (nw_w ws_w) c",
+        nw_h=img_height // windows_tensor.shape[1],
+        nw_w=img_width // windows_tensor.shape[2],
     )
