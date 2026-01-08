@@ -7,11 +7,11 @@ class WMSA(nn.Module):
     def __init__(self, num_channels: int, window_size: int, num_heads: int) -> None:
         super().__init__()
 
-        self.num_channels: int = num_channels
-        self.window_size: int = window_size
-        self.num_heads: int = num_heads
+        self.num_channels = num_channels
+        self.window_size = window_size
+        self.num_heads = num_heads
 
-        self.scale: float = (num_channels // num_heads) ** -0.5
+        self.scale = (num_channels // num_heads) ** -0.5
 
         self.qkv_layer = nn.Linear(in_features=num_channels, out_features=num_channels * 3)
         self.projection = nn.Linear(in_features=num_channels, out_features=num_channels)
@@ -99,3 +99,27 @@ class MLP(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self.layers_sequence(x)
+
+
+class STL(nn.Module):
+    def __init__(
+        self,
+        num_channels: int,
+        input_resolution: tuple[int, int],
+        num_heads: int,
+        window_size: int,
+        shift_size: int,
+        mlp_ratio: int,
+    ) -> None:
+        super().__init__()
+
+        self.num_channels = num_channels
+        self.input_resolution = input_resolution
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+
+        if min(self.input_resolution) <= self.window_size:
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
