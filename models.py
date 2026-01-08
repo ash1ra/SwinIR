@@ -1,28 +1,28 @@
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 
 class WMSA(nn.Module):
-    def __init__(self, dim: int, window_size: int, num_heads: int) -> None:
+    def __init__(self, num_channels: int, window_size: int, num_heads: int) -> None:
         super().__init__()
 
-        self.dim = dim
-        self.window_size = window_size
-        self.num_heads = num_heads
+        self.num_channels: int = num_channels
+        self.window_size: int = window_size
+        self.num_heads: int = num_heads
 
-        self.scale = (dim // num_heads) ** -0.5
+        self.scale: float = (num_channels // num_heads) ** -0.5
+
+        self.qkv_layer = nn.Linear(in_features=num_channels, out_features=num_channels * 3)
+        self.projection = nn.Linear(in_features=num_channels, out_features=num_channels)
+
+        self.register_buffer("relative_position_index", self._get_relative_position_index())
 
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * window_size - 1) * (2 * window_size - 1), num_heads)
         )
 
-        self.register_buffer("relative_position_index", self._get_relative_position_index())
-
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
-
-        self.qkv = nn.Linear(dim, dim * 3)
-        self.proj = nn.Linear(dim, dim)
-        self.softmax = nn.Softmax(dim=-1)
 
     def _get_relative_position_index(self) -> Tensor:
         coords_h = torch.arange(self.window_size)
@@ -43,39 +43,50 @@ class WMSA(nn.Module):
         return relative_position_index
 
     def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
-        B_, N, C = x.shape
+        num_windows, num_patches, num_channels = x.shape
 
-        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        qkv_tensor = (
+            self.qkv_layer(x)
+            .reshape(num_windows, num_patches, 3, self.num_heads, num_channels // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+        queries, keys, values = qkv_tensor[0], qkv_tensor[1], qkv_tensor[2]
 
-        q = q * self.scale
-        attn = q @ k.transpose(-2, -1)
+        queries *= self.scale
+        attention_scores = queries @ keys.transpose(-2, -1)
 
         relative_position_bias = (
-            self.relative_position_bias_table[self.relative_position_index.view(-1)]
-            .view(N, N, -1)
+            self.relative_position_bias_table[self.relative_position_index.flatten()]  # type: ignore
+            .view(num_patches, num_patches, -1)
             .permute(2, 0, 1)
             .contiguous()
         )
 
-        attn += relative_position_bias.unsqueeze(0)
+        attention_scores += relative_position_bias.unsqueeze(0)
 
         if mask is not None:
-            nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
-        else:
-            attn = self.softmax(attn)
+            num_windows_per_img = mask.shape[0]
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
-        x = self.proj(x)
+            attention_scores = attention_scores.view(
+                num_windows // num_windows_per_img,
+                num_windows_per_img,
+                self.num_heads,
+                num_patches,
+                num_patches,
+            )
+            attention_scores += mask.unsqueeze(1).unsqueeze(0)
+            attention_scores = attention_scores.view(-1, self.num_heads, num_patches, num_patches)
+
+        attention_probs = F.softmax(attention_scores, dim=-1)
+
+        x = (attention_probs @ values).transpose(1, 2).reshape(num_windows, num_patches, num_channels)
+        x = self.projection(x)
 
         return x
 
 
 class MLP(nn.Module):
-    def __init__(self, in_features: int, hidden_features: int, out_features: int | None) -> None:
+    def __init__(self, in_features: int, hidden_features: int, out_features: int | None = None) -> None:
         super().__init__()
 
         out_features = out_features or in_features
