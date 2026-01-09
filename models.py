@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from utils import split_img_into_windows, combine_windows_into_img
 
 
 class WMSA(nn.Module):
@@ -43,11 +44,11 @@ class WMSA(nn.Module):
         return relative_position_index
 
     def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
-        num_windows, num_patches, num_channels = x.shape
+        num_windows, num_pixels_in_window, num_channels = x.shape
 
         qkv_tensor = (
             self.qkv_layer(x)
-            .reshape(num_windows, num_patches, 3, self.num_heads, num_channels // self.num_heads)
+            .reshape(num_windows, num_pixels_in_window, 3, self.num_heads, num_channels // self.num_heads)
             .permute(2, 0, 3, 1, 4)
         )
         queries, keys, values = qkv_tensor[0], qkv_tensor[1], qkv_tensor[2]
@@ -57,7 +58,7 @@ class WMSA(nn.Module):
 
         relative_position_bias = (
             self.relative_position_bias_table[self.relative_position_index.flatten()]  # type: ignore
-            .view(num_patches, num_patches, -1)
+            .view(num_pixels_in_window, num_pixels_in_window, -1)
             .permute(2, 0, 1)
             .contiguous()
         )
@@ -71,15 +72,15 @@ class WMSA(nn.Module):
                 num_windows // num_windows_per_img,
                 num_windows_per_img,
                 self.num_heads,
-                num_patches,
-                num_patches,
+                num_pixels_in_window,
+                num_pixels_in_window,
             )
             attention_scores += mask.unsqueeze(1).unsqueeze(0)
-            attention_scores = attention_scores.view(-1, self.num_heads, num_patches, num_patches)
+            attention_scores = attention_scores.view(-1, self.num_heads, num_pixels_in_window, num_pixels_in_window)
 
         attention_probs = F.softmax(attention_scores, dim=-1)
 
-        x = (attention_probs @ values).transpose(1, 2).reshape(num_windows, num_patches, num_channels)
+        x = (attention_probs @ values).transpose(1, 2).reshape(num_windows, num_pixels_in_window, num_channels)
         x = self.projection(x)
 
         return x
@@ -123,3 +124,98 @@ class STL(nn.Module):
         if min(self.input_resolution) <= self.window_size:
             self.shift_size = 0
             self.window_size = min(self.input_resolution)
+
+        if not (0 <= self.shift_size < self.window_size):
+            raise ValueError(
+                f"Shift size ({self.shift_size}) must be >= 0 and less than wiindow_size ({self.window_size})"
+            )
+
+        self.layer_norm_1 = nn.LayerNorm(self.num_channels)
+        self.attention_block = WMSA(
+            num_channels=self.num_channels,
+            window_size=self.window_size,
+            num_heads=self.num_heads,
+        )
+        self.layer_norm_2 = nn.LayerNorm(self.num_channels)
+        self.mlp = MLP(
+            in_features=self.num_channels,
+            hidden_features=self.num_channels * self.mlp_ratio,
+            out_features=self.num_channels,
+        )
+
+        if self.shift_size > 0:
+            attention_mask = self.calculate_mask(x_size=self.input_resolution)
+        else:
+            attention_mask = None
+
+        self.register_buffer("attention_mask", attention_mask)
+
+    def calculate_mask(self, x_size: tuple[int, int]) -> Tensor:
+        img_height, img_width = x_size
+        img_mask = torch.zeros((1, img_height, img_width, 1))
+
+        h_slices = (
+            slice(0, -self.window_size),
+            slice(-self.window_size, -self.shift_size),
+            slice(-self.shift_size, None),
+        )
+
+        w_slices = (
+            slice(0, -self.window_size),
+            slice(-self.window_size, -self.shift_size),
+            slice(-self.shift_size, None),
+        )
+
+        count = 0
+        for h in h_slices:
+            for w in w_slices:
+                img_mask[:, h, w, :] = count
+                count += 1
+
+        mask_windows = split_img_into_windows(img_tensor=img_mask, window_size=self.window_size)
+        mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
+
+        attention_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+        attention_mask.masked_fill_(attention_mask != 0, float(-100.0))
+        attention_mask.masked_fill_(attention_mask == 0, float(0.0))
+
+        return attention_mask
+
+    def forward(self, x: Tensor, x_size: tuple[int, int]) -> Tensor:
+        img_height, img_width = x_size
+        batch_size, num_pixels_in_img, num_channels = x.shape
+
+        residual = x
+
+        x = self.layer_norm_1(x)
+        x = x.view(batch_size, img_height, img_width, num_channels)
+
+        if self.shift_size > 0:
+            x_shifted = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+        else:
+            x_shifted = x
+
+        x_windows = split_img_into_windows(img_tensor=x_shifted, window_size=self.window_size)
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, num_channels)
+
+        if self.input_resolution == x_size:
+            attention_windows = self.attention_block(x_windows, mask=self.attention_mask)
+        else:
+            attention_windows = self.attention_block(x_windows, mask=self.calculate_mask(x_size).to(x.device))
+
+        attention_windows = attention_windows.view(-1, self.window_size, self.window_size, num_channels)
+        x_shifted = combine_windows_into_img(
+            windows_tensor=attention_windows, img_height=img_height, img_width=img_width
+        )
+
+        if self.shift_size > 0:
+            x = torch.roll(x_shifted, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+        else:
+            x = x_shifted
+
+        x = x.view(batch_size, num_pixels_in_img, num_channels)
+
+        x += residual
+        x += self.mlp(self.layer_norm_2(x))
+
+        return x
