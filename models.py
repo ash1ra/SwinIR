@@ -1,7 +1,9 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from utils import split_img_into_windows, combine_windows_into_img
+from torch.utils.checkpoint import checkpoint
+
+from utils import combine_windows_into_img, split_img_into_windows
 
 
 class WMSA(nn.Module):
@@ -217,5 +219,70 @@ class STL(nn.Module):
 
         x += residual
         x += self.mlp(self.layer_norm_2(x))
+
+        return x
+
+
+class RSTB(nn.Module):
+    def __init__(
+        self,
+        num_channels: int,
+        input_resolution: tuple[int, int],
+        num_stl_blocks: int,
+        num_heads: int,
+        window_size: int,
+        shift_size: int,
+        mlp_ratio: int,
+        use_checkpoint: bool,
+    ) -> None:
+        super().__init__()
+
+        self.num_channels = num_channels
+        self.input_resolution = input_resolution
+        self.num_stl_blocks = num_stl_blocks
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+        self.use_checkpoint = use_checkpoint
+
+        self.layers = nn.ModuleList()
+
+        for i in range(num_stl_blocks):
+            self.layers.append(
+                STL(
+                    num_channels=self.num_channels,
+                    input_resolution=self.input_resolution,
+                    num_heads=self.num_heads,
+                    window_size=self.window_size,
+                    shift_size=0 if (i % 2 == 0) else shift_size,
+                    mlp_ratio=self.mlp_ratio,
+                )
+            )
+
+        self.conv_layer = nn.Conv2d(
+            in_channels=self.num_channels,
+            out_channels=self.num_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+
+    def forward(self, x: Tensor, x_size: tuple[int, int]) -> Tensor:
+        img_height, img_width = x_size
+        batch_size, num_pixels_in_img, num_channels = x.shape
+
+        residual = x
+
+        for layer in self.layers:
+            if self.use_checkpoint and x.requires_grad:
+                x = checkpoint(layer, x, x_size, use_reentrant=False)
+            else:
+                x = layer(x, x_size)
+
+        x = x.view(batch_size, img_height, img_width, num_channels).permute(0, 3, 1, 2)
+        x = self.conv_layer(x)
+        x = x.flatten(2).transpose(1, 2)
+        x += residual
 
         return x
