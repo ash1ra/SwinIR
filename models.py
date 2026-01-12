@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -89,10 +91,8 @@ class WMSA(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, in_features: int, hidden_features: int, out_features: int | None = None) -> None:
+    def __init__(self, in_features: int, hidden_features: int, out_features: int) -> None:
         super().__init__()
-
-        out_features = out_features or in_features
 
         self.layers_sequence = nn.Sequential(
             nn.Linear(in_features=in_features, out_features=hidden_features),
@@ -108,7 +108,7 @@ class STL(nn.Module):
     def __init__(
         self,
         num_channels: int,
-        input_resolution: tuple[int, int],
+        train_img_size: tuple[int, int],
         num_heads: int,
         window_size: int,
         shift_size: int,
@@ -117,36 +117,34 @@ class STL(nn.Module):
         super().__init__()
 
         self.num_channels = num_channels
-        self.input_resolution = input_resolution
+        self.train_img_size = train_img_size
         self.num_heads = num_heads
         self.window_size = window_size
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
 
-        if min(self.input_resolution) <= self.window_size:
+        if min(train_img_size) <= window_size:
             self.shift_size = 0
-            self.window_size = min(self.input_resolution)
+            self.window_size = min(train_img_size)
 
-        if not (0 <= self.shift_size < self.window_size):
-            raise ValueError(
-                f"Shift size ({self.shift_size}) must be >= 0 and less than wiindow_size ({self.window_size})"
-            )
+        if not (0 <= shift_size < window_size):
+            raise ValueError(f"Shift size ({shift_size}) must be >= 0 and less than wiindow_size ({window_size})")
 
-        self.layer_norm_1 = nn.LayerNorm(self.num_channels)
+        self.layer_norm_1 = nn.LayerNorm(num_channels)
         self.attention_block = WMSA(
-            num_channels=self.num_channels,
-            window_size=self.window_size,
-            num_heads=self.num_heads,
+            num_channels=num_channels,
+            window_size=window_size,
+            num_heads=num_heads,
         )
-        self.layer_norm_2 = nn.LayerNorm(self.num_channels)
+        self.layer_norm_2 = nn.LayerNorm(num_channels)
         self.mlp = MLP(
-            in_features=self.num_channels,
-            hidden_features=self.num_channels * self.mlp_ratio,
-            out_features=self.num_channels,
+            in_features=num_channels,
+            hidden_features=num_channels * mlp_ratio,
+            out_features=num_channels,
         )
 
-        if self.shift_size > 0:
-            attention_mask = self.calculate_mask(x_size=self.input_resolution)
+        if shift_size > 0:
+            attention_mask = self.calculate_mask(x_size=train_img_size)
         else:
             attention_mask = None
 
@@ -200,7 +198,7 @@ class STL(nn.Module):
         x_windows = split_img_into_windows(img_tensor=x_shifted, window_size=self.window_size)
         x_windows = x_windows.view(-1, self.window_size * self.window_size, num_channels)
 
-        if self.input_resolution == x_size:
+        if self.train_img_size == x_size:
             attention_windows = self.attention_block(x_windows, mask=self.attention_mask)
         else:
             attention_windows = self.attention_block(x_windows, mask=self.calculate_mask(x_size).to(x.device))
@@ -227,7 +225,7 @@ class RSTB(nn.Module):
     def __init__(
         self,
         num_channels: int,
-        input_resolution: tuple[int, int],
+        train_img_size: tuple[int, int],
         num_stl_blocks: int,
         num_heads: int,
         window_size: int,
@@ -238,7 +236,7 @@ class RSTB(nn.Module):
         super().__init__()
 
         self.num_channels = num_channels
-        self.input_resolution = input_resolution
+        self.train_img_size = train_img_size
         self.num_stl_blocks = num_stl_blocks
         self.num_heads = num_heads
         self.window_size = window_size
@@ -251,18 +249,18 @@ class RSTB(nn.Module):
         for i in range(num_stl_blocks):
             self.layers.append(
                 STL(
-                    num_channels=self.num_channels,
-                    input_resolution=self.input_resolution,
-                    num_heads=self.num_heads,
-                    window_size=self.window_size,
+                    num_channels=num_channels,
+                    train_img_size=train_img_size,
+                    num_heads=num_heads,
+                    window_size=window_size,
                     shift_size=0 if (i % 2 == 0) else shift_size,
-                    mlp_ratio=self.mlp_ratio,
+                    mlp_ratio=mlp_ratio,
                 )
             )
 
         self.conv_layer = nn.Conv2d(
-            in_channels=self.num_channels,
-            out_channels=self.num_channels,
+            in_channels=num_channels,
+            out_channels=num_channels,
             kernel_size=3,
             stride=1,
             padding=1,
@@ -286,3 +284,169 @@ class RSTB(nn.Module):
         x += residual
 
         return x
+
+
+class SwinIR(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        train_img_size: tuple[int, int],
+        num_rstb_blocks: int,
+        num_stl_blocks: int,
+        num_heads: int,
+        window_size: int,
+        mlp_ratio: int,
+        upscale: Literal[2, 4, 8],
+        use_checkpoint: bool,
+    ) -> None:
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.train_img_size = train_img_size
+        self.num_stl_blocks = num_stl_blocks
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.mlp_ratio = mlp_ratio
+        self.upscale = upscale
+        self.use_checkpoint = use_checkpoint
+
+        if in_channels == 3:
+            rgb_mean = (0.4488, 0.4371, 0.4040)
+            self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
+        else:
+            self.mean = torch.zeros(1, in_channels, 1, 1) + 0.5
+
+        self.register_buffer("imgs_mean", self.mean)
+
+        self.shallow_feature_extraction = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+
+        self.deep_feature_extraction = nn.ModuleList()
+
+        for _ in range(num_rstb_blocks):
+            self.deep_feature_extraction.append(
+                RSTB(
+                    num_channels=hidden_channels,
+                    train_img_size=train_img_size,
+                    num_stl_blocks=num_stl_blocks,
+                    num_heads=num_heads,
+                    window_size=window_size,
+                    shift_size=window_size // 2,
+                    mlp_ratio=mlp_ratio,
+                    use_checkpoint=use_checkpoint,
+                )
+            )
+
+        self.layer_norm_after_dfe = nn.LayerNorm(hidden_channels)
+        self.conv_after_dfe = nn.Conv2d(
+            in_channels=hidden_channels,
+            out_channels=hidden_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+
+        self.img_reconstruction = nn.Sequential(
+            nn.Conv2d(
+                in_channels=hidden_channels,
+                out_channels=64 * (upscale**2),
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.PixelShuffle(upscale),
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=in_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+        )
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.constant_(module.weight, 1.0)
+            nn.init.constant_(module.bias, 0)
+
+    def _add_padding(self, x: Tensor) -> Tensor:
+        _, _, img_height, img_width = x.size()
+
+        mod_pad_h = (self.window_size - img_height % self.window_size) % self.window_size
+        mod_pad_w = (self.window_size - img_width % self.window_size) % self.window_size
+
+        if mod_pad_h != 0 or mod_pad_w != 0:
+            x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h), "reflect")
+
+        return x
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size, num_channels, img_height, img_width = x.shape
+
+        x = self._add_padding(x)
+        _, _, padded_img_height, padded_img_width = x.shape
+
+        self.imgs_mean = self.imgs_mean.type_as(x)
+        x -= self.imgs_mean
+
+        x = self.shallow_feature_extraction(x)
+        x_after_sfe = x
+
+        x = x.flatten(2).transpose(1, 2)
+
+        for layer in self.deep_feature_extraction:
+            x = layer(x, (padded_img_height, padded_img_width))
+
+        x = self.layer_norm_after_dfe(x)
+
+        x = x.view(batch_size, padded_img_height, padded_img_width, self.hidden_channels).permute(0, 3, 1, 2)
+
+        x = self.conv_after_dfe(x)
+        x += x_after_sfe
+
+        x = self.img_reconstruction(x)
+
+        x = x[:, :, : img_height * self.upscale, : img_width * self.upscale]
+
+        x += self.imgs_mean
+
+        return x
+
+
+if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = SwinIR(
+        in_channels=3,
+        hidden_channels=96,
+        train_img_size=(64, 64),
+        num_rstb_blocks=4,
+        num_stl_blocks=6,
+        num_heads=6,
+        window_size=8,
+        mlp_ratio=4,
+        upscale=4,
+        use_checkpoint=True,
+    ).to(device)
+
+    input_tensor = torch.randn(2, 3, 48, 48).to(device)
+
+    print(f"Input shape: {input_tensor.shape}")
+
+    with torch.no_grad():
+        output_tensor = model(input_tensor)
+
+    print(f"Output shape: {output_tensor.shape}")
