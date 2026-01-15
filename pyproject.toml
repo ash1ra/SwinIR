@@ -13,5 +13,11 @@ dependencies = [
     "tqdm>=4.67.1",
 ]
 
+[dependency-groups]
+dev = [
+	"pytest>=9.0.2",
+]
+
 [tool.ruff]
 line-length = 120
+
