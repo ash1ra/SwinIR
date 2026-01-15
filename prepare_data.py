@@ -1,7 +1,6 @@
 import concurrent.futures
 from functools import partial
 from pathlib import Path
-from typing import Literal
 
 from PIL import Image
 from tqdm import tqdm
@@ -13,7 +12,7 @@ def process_single_image(
     img_path: Path,
     hr_dir: Path,
     lr_dir: Path,
-    scaling_factor: int,
+    scaling_factor: config.ScalingFactor,
 ) -> None:
     img_name = f"{img_path.stem}.png"
     hr_img_output_path = hr_dir / img_name
@@ -48,7 +47,7 @@ def process_single_image(
 def prepare_data(
     input_data_path: Path,
     output_data_path: Path,
-    scaling_factor: Literal[2, 4, 8],
+    scaling_factor: config.ScalingFactor,
     num_workers: int | None = None,
 ) -> None:
     output_data_path.mkdir(parents=True, exist_ok=True)
@@ -82,7 +81,7 @@ def prepare_data(
 
 if __name__ == "__main__":
     prepare_data(
-        input_data_path=Path("data/DF2K.txt"),
-        output_data_path=Path("data/DF2K/"),
+        input_data_path=Path("data/DIV2K_val.txt"),
+        output_data_path=Path("data/DIV2K_val/"),
         scaling_factor=4,
     )

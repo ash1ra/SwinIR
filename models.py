@@ -1,10 +1,9 @@
-from typing import Literal
-
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
+import config
 from utils import combine_windows_into_img, split_img_into_windows
 
 
@@ -297,7 +296,7 @@ class SwinIR(nn.Module):
         num_heads: int,
         window_size: int,
         mlp_ratio: int,
-        upscale: Literal[2, 4, 8],
+        upscale: config.ScalingFactor,
         use_checkpoint: bool,
     ) -> None:
         super().__init__()

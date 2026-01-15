@@ -1,6 +1,5 @@
 import random
 from pathlib import Path
-from typing import Literal
 
 import torch
 from torch import Tensor
@@ -15,7 +14,7 @@ class SRDataset(Dataset):
     def __init__(
         self,
         data_path: Path,
-        scaling_factor: Literal[2, 4, 8],
+        scaling_factor: config.ScalingFactor,
         patch_size: int,
         test_mode: bool = False,
         dev_mode: bool = False,
