@@ -4,7 +4,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from math import exp
 from pathlib import Path
-from typing import Optional
+from typing import Optional, overload
 
 import torch
 import torch.nn.functional as F
@@ -230,6 +230,26 @@ def ssim_metric(
         return ssim_value, ssim_map
     else:
         return ssim_value
+
+
+@overload
+def calculate_ssim(
+    sr_img_tensor: Tensor,
+    hr_img_tensor: Tensor,
+    crop_border: int,
+    window_size: int = 11,
+    return_map: bool = False,
+) -> float: ...
+
+
+@overload
+def calculate_ssim(
+    sr_img_tensor: Tensor,
+    hr_img_tensor: Tensor,
+    crop_border: int,
+    window_size: int = 11,
+    return_map: bool = True,
+) -> tuple[float, Tensor]: ...
 
 
 def calculate_ssim(
