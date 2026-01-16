@@ -1,21 +1,18 @@
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import torch
 from safetensors.torch import load_file, save_file
 from torch import Tensor, nn
 from torch.cuda.amp import GradScaler
-from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import make_grid
-from tqdm import tqdm
 
 import config
-from utils import calculate_psnr, calculate_ssim
+from utils import Timer, calculate_psnr, calculate_ssim, format_time
 
 
 class Trainer:
@@ -33,7 +30,7 @@ class Trainer:
         log_freq: int = 100,
         scheduler: Optional[LRScheduler] = None,
         scaler: Optional[GradScaler] = None,
-        device: Literal["cpu", "cuda"] = "cpu",
+        device: config.DeviceType = "cpu",
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         self.model = model.to(device)
@@ -60,8 +57,34 @@ class Trainer:
 
         self.writer = SummaryWriter(log_dir=str(self.logs_dir_path))
 
+        self.timer = Timer(device=device)
+        self.avg_iter_time = 0.0
+
         self.current_iter = 0
-        self.best_psnr = 0.0
+        self.best_psnr = float("-inf")
+
+    def _update_avg_time(self) -> None:
+        alpha = 0.01
+
+        if self.avg_iter_time == 0.0:
+            self.avg_iter_time = self.timer.last_iter_duration
+        else:
+            self.avg_iter_time = (1 - alpha) * self.avg_iter_time + alpha * self.timer.last_iter_duration
+
+    def _log_progress(self, loss: float) -> None:
+        elapsed_time = format_time(self.timer.get_elapsed_time())
+        remaining_time = format_time((self.num_iters - self.current_iter) * self.avg_iter_time)
+
+        current_lr = self.optimizer.param_groups[0]["lr"]
+
+        config.logger.info(
+            (
+                f"Iter: [{self.current_iter:>6d}/{self.num_iters}] "
+                f"({elapsed_time} / {self.avg_iter_time} / {remaining_time}) | "
+                f"Loss: {loss:.4f} | "
+                f"LR: {current_lr:.2e} | "
+            )
+        )
 
     def _train_step(self, batch: dict[str, Tensor]) -> float:
         lr_img_tensor = batch["lr"].to(self.device, non_blocking=True)
@@ -93,35 +116,32 @@ class Trainer:
         config.logger.info(f"Starting training on {self.device} using {self.dtype} for {self.num_iters} iterations...")
         self.model.train()
 
-        pbar = tqdm(total=self.num_iters, initial=self.current_iter, unit="iter")
-
         for batch in self.train_dataloader:
-            self.current_iter += 1
+            with self.timer:
+                loss = self._train_step(batch)
 
-            loss = self._train_step(batch)
+                if self.current_iter % self.val_freq == 0:
+                    self.validate()
+                    self.save_checkpoint(is_best=False)
+
+            self._update_avg_time()
 
             if self.current_iter % self.log_freq == 0:
-                self._log_metrics(loss)
-                pbar.set_description(f"Iter: {self.current_iter} | Loss: {loss:.4f}")
+                self._log_progress(loss)
 
-            pbar.update(1)
-
-            if self.current_iter % self.val_freq == 0:
-                self.validate()
-                self.save_checkpoint(is_best=False)
+            self.current_iter += 1
 
             if self.current_iter >= self.num_iters:
                 break
 
-        pbar.close()
         self.writer.close()
         self.save_checkpoint(is_best=False)
         config.logger.info("Training finished.")
 
-    def _log_metrics(self, loss: float) -> None:
-        current_lr = self.optimizer.param_groups[0]["lr"]
-        self.writer.add_scalar("Train/Loss", loss, self.current_iter)
-        self.writer.add_scalar("Train/LR", current_lr, self.current_iter)
+    # def _log_metrics(self, loss: float) -> None:
+    #     current_lr = self.optimizer.param_groups[0]["lr"]
+    #     self.writer.add_scalar("Train/Loss", loss, self.current_iter)
+    #     self.writer.add_scalar("Train/LR", current_lr, self.current_iter)
 
     @torch.no_grad()
     def validate(self):
@@ -130,7 +150,7 @@ class Trainer:
         avg_psnr = 0.0
         avg_ssim = 0.0
 
-        vis_lr, vis_sr, vis_hr = None, None, None
+        # vis_lr, vis_sr, vis_hr = None, None, None
 
         for i, batch in enumerate(self.val_dataloader):
             lr_img_tensor = batch["lr"].to(self.device, non_blocking=True)
@@ -162,10 +182,12 @@ class Trainer:
             avg_psnr += batch_psnr / batch_size
             avg_ssim += batch_ssim / batch_size
 
-            if i == 0:
-                vis_lr = lr_img_tensor[0].detach().cpu().float()
-                vis_sr = sr_img_tensor[0].detach().cpu().float().clamp(0, 1)
-                vis_hr = hr_img_tensor[0].detach().cpu().float()
+            # if i == 0:
+            #     vis_lr = lr_img_tensor[0].detach().cpu().float()
+            #     vis_sr = sr_img_tensor[0].detach().cpu().float().clamp(0, 1)
+            #     vis_hr = hr_img_tensor[0].detach().cpu().float()
+
+        self.model.train()
 
         avg_psnr /= len(self.val_dataloader)
         avg_ssim /= len(self.val_dataloader)
@@ -175,18 +197,18 @@ class Trainer:
 
         config.logger.info(f"Validation | Iter: {self.current_iter} | PSNR: {avg_psnr:.2f} | SSIM: {avg_ssim:.4f}")
 
-        if vis_sr is not None:
-            self._log_images(vis_lr, vis_sr, vis_hr)
+        # if all([vis_lr, vis_sr, vis_hr]) is not None:
+        #     self._log_images(vis_lr, vis_sr, vis_hr)
 
         if avg_psnr > self.best_psnr:
             self.best_psnr = avg_psnr
             self.save_checkpoint(is_best=True)
 
-    def _log_images(self, lr_img_tensor: Tensor, sr_img_tensor: Tensor, hr_img_tensor: Tensor) -> None:
-        lr_up = F.interpolate(lr_img_tensor.unsqueeze(0), scale_factor=self.scaling_factor, mode="nearest").squeeze(0)
-
-        grid = make_grid([lr_up, sr_img_tensor, hr_img_tensor], nrow=3, padding=5, normalize=False)
-        self.writer.add_image("Val_Images", grid, self.current_iter)
+    # def _log_images(self, lr_img_tensor: Tensor, sr_img_tensor: Tensor, hr_img_tensor: Tensor) -> None:
+    #     lr_up = F.interpolate(lr_img_tensor.unsqueeze(0), scale_factor=self.scaling_factor, mode="nearest").squeeze(0)
+    #
+    #     grid = make_grid([lr_up, sr_img_tensor, hr_img_tensor], nrow=3, padding=5, normalize=False)
+    #     self.writer.add_image("Val_Images", grid, self.current_iter)
 
     def save_checkpoint(self, is_best: bool) -> None:
         model_state = self.model.state_dict()
