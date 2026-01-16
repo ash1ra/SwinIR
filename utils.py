@@ -4,13 +4,58 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from math import exp
 from pathlib import Path
-from typing import Optional, overload
+from time import perf_counter
+from typing import Literal, Optional, Self, overload
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 from torch.utils.data import DataLoader
+
+
+class Timer:
+    def __init__(self, device: Literal["cuda", "cpu"] = "cpu") -> None:
+        self.is_cuda = True if device == "cuda" else False
+        self.global_start_time = 0.0
+        self.last_iter_duration = 0.0
+
+        if self.is_cuda:
+            self.start_event = torch.cuda.Event(enable_timing=True)
+            self.end_event = torch.cuda.Event(enable_timing=True)
+        else:
+            self.start_time = 0.0
+
+    def start(self) -> None:
+        if self.global_start_time == 0.0:
+            self.global_start_time = perf_counter()
+
+        if self.is_cuda:
+            self.start_event.record()
+        else:
+            self.start_time = perf_counter()
+
+    def stop(self) -> float:
+        if self.is_cuda:
+            self.end_event.record()
+            torch.cuda.synchronize()
+
+            return self.start_event.elapsed_time(self.end_event) / 1000
+        else:
+            return perf_counter() - self.start_time
+
+    def get_elapsed_time(self) -> float:
+        if self.global_start_time == 0.0:
+            return 0.0
+        else:
+            return perf_counter() - self.global_start_time
+
+    def __enter__(self) -> Self:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.last_iter_duration = self.stop()
 
 
 class InfiniteDataLoader(DataLoader):
@@ -282,3 +327,14 @@ def calculate_ssim(
         window_size=window_size,
         return_map=return_map,
     )
+
+
+def format_time(total_seconds: float) -> str:
+    if total_seconds < 0:
+        total_seconds = 0
+
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = int(total_seconds % 60)
+
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
