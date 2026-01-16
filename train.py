@@ -43,7 +43,7 @@ def main():
         num_workers=config.TRAIN_NUM_WORKERS,
         pin_memory=True if device == "cuda" else False,
         prefetch_factor=config.TRAIN_PREFETCH_FACTOR,
-        persistent_workers=True,
+        persistent_workers=True if config.TRAIN_NUM_WORKERS > 0 else False,
     )
 
     val_dataloader = DataLoader(
@@ -66,7 +66,7 @@ def main():
         window_size=config.WINDOW_SIZE,
         mlp_ratio=config.MLP_RATIO,
         upscale=config.SCALING_FACTOR,
-        use_checkpoint=config.USE_CHECKPOINT,
+        use_gradient_checkpointing=config.USE_GRADIENT_CHECKPOINTING,
     )
 
     loss_fn = nn.L1Loss()

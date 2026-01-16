@@ -76,12 +76,12 @@ class Trainer:
         if self.scaler:
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
-            clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+            clip_grad_norm_(self.model.parameters(), max_norm=config.GRADIENT_CLIPPING_NORM)
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
             loss.backward()
-            clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+            clip_grad_norm_(self.model.parameters(), max_norm=config.GRADIENT_CLIPPING_NORM)
             self.optimizer.step()
 
         if self.scheduler:

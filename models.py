@@ -230,7 +230,7 @@ class RSTB(nn.Module):
         window_size: int,
         shift_size: int,
         mlp_ratio: int,
-        use_checkpoint: bool,
+        use_gradient_checkpointing: bool,
     ) -> None:
         super().__init__()
 
@@ -241,7 +241,7 @@ class RSTB(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
-        self.use_checkpoint = use_checkpoint
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         self.layers = nn.ModuleList()
 
@@ -272,7 +272,7 @@ class RSTB(nn.Module):
         residual = x
 
         for layer in self.layers:
-            if self.use_checkpoint and x.requires_grad:
+            if self.use_gradient_checkpointing and x.requires_grad:
                 x = checkpoint(layer, x, x_size, use_reentrant=False)
             else:
                 x = layer(x, x_size)
@@ -297,7 +297,7 @@ class SwinIR(nn.Module):
         window_size: int,
         mlp_ratio: int,
         upscale: config.ScalingFactor,
-        use_checkpoint: bool,
+        use_gradient_checkpointing: bool,
     ) -> None:
         super().__init__()
 
@@ -309,7 +309,7 @@ class SwinIR(nn.Module):
         self.window_size = window_size
         self.mlp_ratio = mlp_ratio
         self.upscale = upscale
-        self.use_checkpoint = use_checkpoint
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         if in_channels == 3:
             rgb_mean = (0.4488, 0.4371, 0.4040)
@@ -339,7 +339,7 @@ class SwinIR(nn.Module):
                     window_size=window_size,
                     shift_size=window_size // 2,
                     mlp_ratio=mlp_ratio,
-                    use_checkpoint=use_checkpoint,
+                    use_gradient_checkpointing=use_gradient_checkpointing,
                 )
             )
 
@@ -438,7 +438,7 @@ if __name__ == "__main__":
         window_size=8,
         mlp_ratio=4,
         upscale=4,
-        use_checkpoint=True,
+        use_gradient_checkpointing=True,
     ).to(device)
 
     input_tensor = torch.randn(2, 3, 48, 48).to(device)

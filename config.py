@@ -3,25 +3,27 @@ from typing import TypeAlias, Literal
 from pathlib import Path
 
 ScalingFactor: TypeAlias = Literal[2, 4, 8]
+DeviceType: TypeAlias = Literal["cuda", "cpu"]
 
 # Architecture settings
-HIDDEN_CHANNELS = 96
+HIDDEN_CHANNELS = 180
 NUM_RSTB_BLOCKS = 6
 NUM_STL_BLOCKS = 6
 NUM_HEADS = 6
 MLP_RATIO = 4
 WINDOW_SIZE = 8
-USE_CHECKPOINT = True
+USE_GRADIENT_CHECKPOINTING = True
 
 # Training settings
 SCALING_FACTOR = 4
-PATCH_SIZE = 64
+PATCH_SIZE = 48
 LEARNING_RATE = 2e-4
-TRAIN_BATCH_SIZE = 1
+TRAIN_BATCH_SIZE = 32
 VAL_BATCH_SIZE = 1
 NUM_ITERATIONS = 500_000
 VAL_FREQ = 5000
 LOG_FREQ = 100
+GRADIENT_CLIPPING_NORM = 0.5
 
 # Optimizer settings
 ADAM_BETAS = (0.9, 0.99)
@@ -34,8 +36,8 @@ SCHEDULER_GAMMA = 0.5
 # Dataloader settings
 TRAIN_NUM_WORKERS = 8
 TRAIN_PREFETCH_FACTOR = 4
-VAL_NUM_WORKERS = 0
-VAL_PREFETCH_FACTOR = None
+VAL_NUM_WORKERS = 2
+VAL_PREFETCH_FACTOR = 2
 
 # Dataset pathes
 TRAIN_DATASET_PATH = Path("data/DF2K")
@@ -50,7 +52,7 @@ TEST_DATASET_PATHS = [
 
 # Checkpoint settings
 LOAD_BEST_CHECKPOINT = False
-LOAD_CHECKPOINT = False
+LOAD_CHECKPOINT = True
 
 BEST_CHECKPOINT_DIR_PATH = Path("checkpoints/best")
 CHECKPOINT_DIR_PATH = Path("checkpoints/iter_5000")
