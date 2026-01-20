@@ -33,7 +33,7 @@ def main():
         scaling_factor=config.SCALING_FACTOR,
         patch_size=config.PATCH_SIZE,
         test_mode=True,
-        dev_mode=False,
+        dev_mode=True,
     )
 
     train_dataloader = InfiniteDataLoader(
@@ -111,6 +111,7 @@ def main():
         trainer.train()
     except KeyboardInterrupt:
         logger.info("Training interrupted by used. Saving last state...")
+        trainer.save_checkpoint(is_best=False)
 
 
 if __name__ == "__main__":
