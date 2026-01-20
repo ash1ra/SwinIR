@@ -8,6 +8,7 @@ from torchvision.io import ImageReadMode, decode_image
 from torchvision.transforms import v2 as transforms
 
 import config
+from utils import logger
 
 
 class SRDataset(Dataset):
@@ -28,7 +29,7 @@ class SRDataset(Dataset):
         self.lr_dir_path = data_path / f"LR_x{scaling_factor}"
 
         if not self.hr_dir_path.exists() or not self.lr_dir_path.exists():
-            raise FileNotFoundError(f"Datasets directories not found in '{data_path}'")
+            raise FileNotFoundError(f"[Data] Datasets directories not found in '{data_path}'")
 
         hr_img_names = {hr_img.name for hr_img in self.hr_dir_path.glob("*.png")}
         lr_img_names = {lr_img.name for lr_img in self.lr_dir_path.glob("*.png")}
@@ -36,12 +37,14 @@ class SRDataset(Dataset):
         self.img_names = sorted(list(hr_img_names & lr_img_names))
 
         if len(self.img_names) == 0:
-            raise FileNotFoundError(f"No matching files found between '{self.hr_dir_path}' and '{self.lr_dir_path}'")
+            raise FileNotFoundError(
+                f"[Data] No matching files found between '{self.hr_dir_path}' and '{self.lr_dir_path}'"
+            )
 
         if len(hr_img_names) != len(lr_img_names):
-            config.logger.warning(
-                f"Mismatch in file counts! HR: {len(hr_img_names)}, LR: {len(lr_img_names)}. "
-                f"Using {len(self.img_names)} common files."
+            logger.warning(
+                f"[Data] Count mismatch! HR: {len(hr_img_names)}, LR: {len(lr_img_names)}. "
+                f"Proceeding with {len(self.img_names)} common files."
             )
 
         if dev_mode:
@@ -63,10 +66,10 @@ class SRDataset(Dataset):
             lr_img_tensor = decode_image(lr_img_path, mode=ImageReadMode.RGB)
         except Exception as e:
             if self.test_mode:
-                config.logger.error(f"Error loading '{img_name}'.")
+                logger.error(f"[Data] Error loading '{img_name}'.")
                 raise e
             else:
-                config.logger.warning(f"Error loading '{img_name}'. Using random sample instead.")
+                logger.warning(f"[Data] Failed to load '{img_name}'. Skipping and resampling.")
                 return self.__getitem__(random.randint(0, len(self) - 1))
 
         hr_img_tensor = self.normalize(hr_img_tensor)
@@ -78,8 +81,8 @@ class SRDataset(Dataset):
         _, img_height, img_width = lr_img_tensor.shape
 
         if img_height <= self.patch_size or img_width <= self.patch_size:
-            config.logger.warning(
-                f"Size of the image '{img_name}' ({img_height}x{img_width}) is less than patch size ({self.patch_size}). Using random sample instead."
+            logger.warning(
+                f"[Data] Image '{img_name}' ({img_height}x{img_width}) is smaller than patch size ({self.patch_size}). Skipped."
             )
             return self.__getitem__(random.randint(0, len(self) - 1))
 

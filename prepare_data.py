@@ -6,6 +6,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import config
+from utils import logger
 
 
 def process_single_image(
@@ -60,16 +61,16 @@ def prepare_data(
 
     if input_data_path.exists():
         if input_data_path.is_dir():
-            config.logger.info(f"Reading images from directory ({input_data_path})...")
+            logger.info(f"Reading images from directory ({input_data_path})...")
             img_paths = sorted([p for p in input_data_path.glob("*") if p.suffix.lower() in (".png", ".jpg", ".jpeg")])
         elif input_data_path.is_file():
-            config.logger.info(f"Reading images from file ({input_data_path})...")
+            logger.info(f"Reading images from file ({input_data_path})...")
             with open(input_data_path, "r") as f:
                 img_paths = sorted([Path(line.strip()) for line in f if line.strip()])
     else:
         raise FileNotFoundError(f"Input data path {input_data_path} not found.")
 
-    config.logger.info(f"Found {len(img_paths)} images. Starting multiprocessing...")
+    logger.info(f"Found {len(img_paths)} images. Starting multiprocessing...")
 
     worker = partial(
         process_single_image, hr_dir=hr_dir_output_path, lr_dir=lr_dir_output_path, scaling_factor=scaling_factor

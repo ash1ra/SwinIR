@@ -10,7 +10,7 @@ import config
 from dataset import SRDataset
 from models import SwinIR
 from trainer import Trainer
-from utils import InfiniteDataLoader
+from utils import InfiniteDataLoader, logger
 
 
 def main():
@@ -102,13 +102,15 @@ def main():
 
     if config.LOAD_BEST_CHECKPOINT and config.BEST_CHECKPOINT_DIR_PATH.exists():
         trainer.load_checkpoint(config.BEST_CHECKPOINT_DIR_PATH)
+        config.logger.info("Resuming training from best model checkpoint.")
     elif config.LOAD_CHECKPOINT and config.CHECKPOINT_DIR_PATH.exists():
         trainer.load_checkpoint(config.CHECKPOINT_DIR_PATH)
+        config.logger.info(f"Resuming training from iteration #{trainer.current_iter}.")
 
     try:
         trainer.train()
     except KeyboardInterrupt:
-        config.logger.info("Training interrupted by used.")
+        logger.info("Training interrupted by used. Saving last state...")
 
 
 if __name__ == "__main__":

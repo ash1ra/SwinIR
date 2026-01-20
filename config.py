@@ -1,6 +1,5 @@
-from utils import create_logger
-from typing import TypeAlias, Literal
 from pathlib import Path
+from typing import Literal, TypeAlias
 
 ScalingFactor: TypeAlias = Literal[2, 4, 8]
 DeviceType: TypeAlias = Literal["cuda", "cpu"]
@@ -58,4 +57,3 @@ BEST_CHECKPOINT_DIR_PATH = Path("checkpoints/best")
 CHECKPOINT_DIR_PATH = Path("checkpoints/iter_5000")
 
 
-logger = create_logger(log_level="INFO", log_file_name="SwinIR")
