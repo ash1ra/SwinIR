@@ -10,7 +10,6 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 
 import config
 from utils import Timer, calculate_psnr, calculate_ssim, format_time, logger
@@ -56,8 +55,6 @@ class Trainer:
         for dir in [self.checkpoints_dir_path, self.imgs_dir_path, self.logs_dir_path]:
             dir.mkdir(parents=True, exist_ok=True)
 
-        self.writer = SummaryWriter(log_dir=str(self.logs_dir_path))
-
         self.timer = Timer(device=device)
         self.avg_iter_time = 0.0
 
@@ -70,6 +67,12 @@ class Trainer:
         self.model.eval()
         flops, _ = profile(model=self.model, inputs=(dummy_input,), verbose=False)
         self.model.train()
+
+        for module in self.model.modules():
+            if hasattr(module, "total_ops"):
+                del module.total_ops
+            if hasattr(module, "total_params"):
+                del module.total_params
 
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -189,7 +192,13 @@ class Trainer:
     def train(self):
         self._log_model_info()
 
-        logger.info(f"Training started on {self.device} for {self.num_iters:,} iterations.")
+        if self.current_iter > 0:
+            logger.info(
+                f"Resuming training on {self.device} from iteration {self.current_iter:,} / {self.num_iters:,}."
+            )
+        else:
+            logger.info(f"Starting training on {self.device} for {self.num_iters:,}.")
+
         self.model.train()
 
         for batch in self.train_dataloader:
@@ -201,17 +210,15 @@ class Trainer:
                     self.validate()
                     self.save_checkpoint(is_best=False)
 
+            self.current_iter += 1
             self._update_avg_time()
 
             if self.current_iter % self.log_freq == 0:
                 self._log_progress(loss)
 
-            self.current_iter += 1
-
             if self.current_iter >= self.num_iters:
                 break
 
-        self.writer.close()
         self.save_checkpoint(is_best=False)
         logger.info("Training run completed successfully.")
 
@@ -256,9 +263,6 @@ class Trainer:
 
         avg_psnr /= len(self.val_dataloader)
         avg_ssim /= len(self.val_dataloader)
-
-        self.writer.add_scalar("Val/PSNR", avg_psnr, self.current_iter)
-        self.writer.add_scalar("Val/SSIM", avg_ssim, self.current_iter)
 
         logger.info(f"Validation result | Iteration: {self.current_iter} | PSNR: {avg_psnr:.2f} | SSIM: {avg_ssim:.4f}")
 
@@ -318,7 +322,16 @@ class Trainer:
             self.current_iter = state["current_iter"]
             self.best_psnr = state["best_psnr"]
 
-            self.optimizer.load_state_dict(state["optimizer"])
+            try:
+                self.optimizer.load_state_dict(state["optimizer"])
+
+                for param_group in self.optimizer.param_groups:
+                    param_group["lr"] = config.LEARNING_RATE
+                    if "betas" in param_group:
+                        param_group["betas"] = config.ADAM_BETAS
+
+            except Exception:
+                logger.warning("[Checkpoint] Optimizer type mismatch. Skipping the optimizer parameter loading.")
 
             if self.scheduler and state["scheduler"]:
                 self.scheduler.load_state_dict(state["scheduler"])
@@ -326,6 +339,6 @@ class Trainer:
             if self.scaler and state["scaler"]:
                 self.scaler.load_state_dict(state["scaler"])
 
-            logger.info("[Checkpoint] Training state loaded successfully .")
+            logger.info("[Checkpoint] Training state loaded successfully.")
         else:
             logger.warning(f"[Checkpoint] Model state file not found at '{state_path}'")

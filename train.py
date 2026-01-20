@@ -102,10 +102,8 @@ def main():
 
     if config.LOAD_BEST_CHECKPOINT and config.BEST_CHECKPOINT_DIR_PATH.exists():
         trainer.load_checkpoint(config.BEST_CHECKPOINT_DIR_PATH)
-        config.logger.info("Resuming training from best model checkpoint.")
     elif config.LOAD_CHECKPOINT and config.CHECKPOINT_DIR_PATH.exists():
         trainer.load_checkpoint(config.CHECKPOINT_DIR_PATH)
-        config.logger.info(f"Resuming training from iteration #{trainer.current_iter}.")
 
     try:
         trainer.train()
