@@ -3,6 +3,7 @@ from typing import Optional
 
 import torch
 from safetensors.torch import load_file, save_file
+from thop import profile
 from torch import Tensor, nn
 from torch.cuda.amp import GradScaler
 from torch.nn.utils import clip_grad_norm_
@@ -63,8 +64,82 @@ class Trainer:
         self.current_iter = 0
         self.best_psnr = float("-inf")
 
+    def _log_model_info(self) -> None:
+        dummy_input = torch.randn(1, 3, config.PATCH_SIZE, config.PATCH_SIZE).to(self.device)
+
+        self.model.eval()
+        flops, _ = profile(model=self.model, inputs=(dummy_input,), verbose=False)
+        self.model.train()
+
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+        dash_line = "-" * 60
+
+        logger.info(dash_line)
+        logger.info("Model & Training Information")
+        logger.info(dash_line)
+        logger.info(f"Model Architecture: {self.model.__class__.__name__}")
+        logger.info(f"Total Parameters: {total_params / 1e6:.2f} M")
+        logger.info(f"Trainable Parameters: {trainable_params / 1e6:.2f} M")
+        logger.info(f"GFLOPs (per patch): {flops / 1e9:.4f} G")
+
+        if self.device == "cuda":
+            num_gpus = torch.cuda.device_count()
+            logger.info(f"Device: CUDA ({num_gpus} GPUs active)")
+
+            for i in range(num_gpus):
+                gpu = torch.cuda.get_device_properties(i)
+                total_memory = gpu.total_memory / (1024**3)
+                logger.info(f"   [{i}] {gpu.name} ({total_memory:.1f} GB VRAM)")
+        else:
+            logger.info("Device: CPU")
+
+        logger.info(dash_line)
+        logger.info("Architecture Settings")
+        logger.info(dash_line)
+        logger.info(f"Hidden Channels: {config.HIDDEN_CHANNELS}")
+        logger.info(f"RSTB Blocks: {config.NUM_RSTB_BLOCKS}")
+        logger.info(f"STL Blocks: {config.NUM_STL_BLOCKS}")
+        logger.info(f"Attention Heads: {config.NUM_HEADS}")
+        logger.info(f"Window Size: {config.WINDOW_SIZE}")
+        logger.info(f"MLP Ratio: {config.MLP_RATIO}")
+
+        logger.info(dash_line)
+        logger.info("Hyperparameters")
+        logger.info(dash_line)
+        logger.info(f"Scaling Factor: x{self.scaling_factor}")
+        logger.info(f"Patch Size: {config.PATCH_SIZE}x{config.PATCH_SIZE}")
+        logger.info(f"Batch Size: {config.TRAIN_BATCH_SIZE}")
+        logger.info(f"Total iteration: {self.num_iters:,}")
+        logger.info(f"Loss Function: {self.loss_fn.__class__.__name__}")
+        logger.info(f"Optimizer: {self.optimizer.__class__.__name__}")
+
+        if isinstance(self.optimizer, torch.optim.Adam):
+            logger.info(f"  - Betas: {config.ADAM_BETAS}")
+            logger.info(f"  - Epsilon: {config.ADAM_EPS}")
+
+        logger.info(f"Initial Learning Rate: {config.LEARNING_RATE}")
+        logger.info(f"Scheduler: {self.scheduler.__class__.__name__ if self.scheduler else 'None'}")
+
+        if self.scheduler:
+            logger.info(f"  - Milestones: {config.SCHEDULER_MILESTONES}")
+            logger.info(f"  - Gamma: {config.SCHEDULER_GAMMA}")
+
+        logger.info(f"Scaler: {'Enabled' if self.scaler else 'Disabled'}")
+        logger.info(f"Precision (Data Type): {self.dtype}")
+        logger.info(f"Gradient Clipping: {config.GRADIENT_CLIPPING_NORM}")
+        logger.info(f"Gradient Checkpointing: {config.USE_GRADIENT_CHECKPOINTING}")
+
+        logger.info(dash_line)
+        logger.info("Data Processing")
+        logger.info(dash_line)
+        logger.info(f"Training Workers: {config.TRAIN_NUM_WORKERS} (Prefetch: {config.TRAIN_PREFETCH_FACTOR})")
+        logger.info(f"Val Workers: {config.VAL_NUM_WORKERS} (Prefetch: {config.VAL_PREFETCH_FACTOR})")
+        logger.info(dash_line)
+
     def _update_avg_time(self) -> None:
-        alpha = 0.01
+        alpha = 0.5
 
         if self.avg_iter_time == 0.0:
             self.avg_iter_time = self.timer.last_iter_duration
@@ -112,6 +187,8 @@ class Trainer:
         return loss.item()
 
     def train(self):
+        self._log_model_info()
+
         logger.info(f"Training started on {self.device} for {self.num_iters:,} iterations.")
         self.model.train()
 
