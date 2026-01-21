@@ -38,6 +38,7 @@ def main():
 
     train_dataloader = InfiniteDataLoader(
         dataset=train_dataset,
+        repeats=config.DATASET_REPEATS,
         batch_size=config.TRAIN_BATCH_SIZE,
         shuffle=True,
         num_workers=config.TRAIN_NUM_WORKERS,

@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 import config
 
@@ -100,8 +100,11 @@ class Timer:
 
 
 class InfiniteDataLoader(DataLoader):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, dataset: Dataset, repeats: int = 1, *args, **kwargs):
+        if repeats > 1:
+            dataset = ConcatDataset([dataset] * repeats)
+
+        super().__init__(dataset, *args, **kwargs)
 
         self._iterator = super().__iter__()
 
@@ -112,7 +115,7 @@ class InfiniteDataLoader(DataLoader):
         try:
             batch = next(self._iterator)  # type: ignore
         except StopIteration:
-            logger.info("Restarting InfiniteDataLoader...")
+            logger.info("[DataLoader] Restarting InfiniteDataLoader...")
             self._iterator = super().__iter__()
             batch = next(self._iterator)
         return batch
