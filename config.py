@@ -57,4 +57,23 @@ LOAD_CHECKPOINT = False
 BEST_CHECKPOINT_DIR_PATH = Path("checkpoints/best")
 CHECKPOINT_DIR_PATH = Path("checkpoints/iter_0")
 
-
+# WandB settings
+USE_WANDB = True
+WANDB_PROJECT_NAME = "SwinIR-SR"
+WANDB_CONFIG = {
+    "hidden_channels": HIDDEN_CHANNELS,
+    "num_rstb_blocks": NUM_RSTB_BLOCKS,
+    "num_stl_blocks": NUM_STL_BLOCKS,
+    "num_heads": NUM_HEADS,
+    "mlp_ratio": MLP_RATIO,
+    "window_size": WINDOW_SIZE,
+    "use_gradient_checkpointing": USE_GRADIENT_CHECKPOINTING,
+    "scaling_factor": SCALING_FACTOR,
+    "patch_size": PATCH_SIZE,
+    "learning_rate": LEARNING_RATE,
+    "batch_size": TRAIN_BATCH_SIZE,
+    "num_iteration": NUM_ITERATIONS,
+    "gradient_clipping_norm": GRADIENT_CLIPPING_NORM,
+    "train_num_workers": TRAIN_NUM_WORKERS,
+    "train_prefetch_factor": TRAIN_PREFETCH_FACTOR,
+}

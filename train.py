@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import torch
+import wandb
 from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
@@ -33,7 +34,7 @@ def main():
         scaling_factor=config.SCALING_FACTOR,
         patch_size=config.PATCH_SIZE,
         test_mode=True,
-        dev_mode=True,
+        dev_mode=False,
     )
 
     train_dataloader = InfiniteDataLoader(
@@ -85,6 +86,31 @@ def main():
         gamma=config.SCHEDULER_GAMMA,
     )
 
+    wandb_id = None
+    target_checkpoint_path = None
+
+    if config.LOAD_BEST_CHECKPOINT and config.BEST_CHECKPOINT_DIR_PATH.exists():
+        target_checkpoint_path = config.BEST_CHECKPOINT_DIR_PATH
+    elif config.LOAD_CHECKPOINT and config.CHECKPOINT_DIR_PATH.exists():
+        target_checkpoint_path = config.CHECKPOINT_DIR_PATH
+
+    if target_checkpoint_path:
+        state_path = target_checkpoint_path / "state.pth"
+
+        if state_path.exists():
+            state_dict = torch.load(state_path, map_location="cpu")
+            wandb_id = state_dict.get("wandb_id", None)
+
+    if config.USE_WANDB:
+        wandb.init(
+            project=config.WANDB_PROJECT_NAME,
+            name=f"SwinIR_x{config.SCALING_FACTOR}_ps{config.PATCH_SIZE}",
+            id=wandb_id,
+            config=config.WANDB_CONFIG,
+            tags=[f"x{config.SCALING_FACTOR}", "training"],
+            resume="allow",
+        )
+
     trainer = Trainer(
         model=model,
         train_dataloader=train_dataloader,
@@ -101,10 +127,8 @@ def main():
         dtype=torch.bfloat16,
     )
 
-    if config.LOAD_BEST_CHECKPOINT and config.BEST_CHECKPOINT_DIR_PATH.exists():
-        trainer.load_checkpoint(config.BEST_CHECKPOINT_DIR_PATH)
-    elif config.LOAD_CHECKPOINT and config.CHECKPOINT_DIR_PATH.exists():
-        trainer.load_checkpoint(config.CHECKPOINT_DIR_PATH)
+    if target_checkpoint_path:
+        trainer.load_checkpoint(target_checkpoint_path)
 
     try:
         trainer.train()

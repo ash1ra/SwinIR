@@ -12,6 +12,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 
 import config
+import wandb
 from utils import Timer, calculate_psnr, calculate_ssim, format_time, logger
 
 
@@ -142,7 +143,7 @@ class Trainer:
         logger.info(dash_line)
 
     def _update_avg_time(self) -> None:
-        alpha = 0.5
+        alpha = 0.1
 
         if self.avg_iter_time == 0.0:
             self.avg_iter_time = self.timer.last_iter_duration
@@ -157,11 +158,44 @@ class Trainer:
 
         logger.info(
             (
-                f"Iteration: [{self.current_iter:>6d}/{self.num_iters}] "
+                f"Iter: [{self.current_iter:>6d}/{self.num_iters}] "
                 f"({format_time(self.avg_iter_time)} / {elapsed_time} / {remaining_time})"
             )
         )
         logger.info(f"Loss: {loss:.4f} | LR: {current_lr:.2e}")
+
+        if config.USE_WANDB:
+            wandb.log(
+                {
+                    "train/loss": loss,
+                    "train/lr": current_lr,
+                    "train/iteration": self.current_iter,
+                },
+                step=self.current_iter,
+            )
+
+    def _log_images(self, lr_img_tensor: Tensor, sr_img_tensor: Tensor, hr_img_tensor: Tensor) -> None:
+        lr_img_tensor = lr_img_tensor.float().cpu().clamp(0, 1)
+        sr_img_tensor = sr_img_tensor.float().cpu().clamp(0, 1)
+        hr_img_tensor = hr_img_tensor.float().cpu().clamp(0, 1)
+
+        lr_img_tensor_resized = torch.nn.functional.interpolate(
+            input=lr_img_tensor.unsqueeze(0),
+            size=(hr_img_tensor.shape[1], hr_img_tensor.shape[2]),
+            mode="nearest",
+        ).squeeze(0)
+
+        combined_img_tensor = torch.cat([lr_img_tensor_resized, sr_img_tensor, hr_img_tensor], dim=2)
+
+        wandb.log(
+            {
+                "val/visual_results": wandb.Image(
+                    data_or_path=combined_img_tensor,
+                    caption=f"Iter {self.current_iter}: LR (Nearest) | SR ({self.model.__class__.__name__}) | HR(Truth)",
+                )
+            },
+            step=self.current_iter,
+        )
 
     def _train_step(self, batch: dict[str, Tensor]) -> float:
         lr_img_tensor = batch["lr"].to(self.device, non_blocking=True)
@@ -194,10 +228,10 @@ class Trainer:
 
         if self.current_iter > 0:
             logger.info(
-                f"Resuming training on {self.device} from iteration {self.current_iter:,} / {self.num_iters:,}."
+                f"Resuming training on {self.device} device from iteration {self.current_iter:,} / {self.num_iters:,}."
             )
         else:
-            logger.info(f"Starting training on {self.device} for {self.num_iters:,}.")
+            logger.info(f"Starting training on {self.device} device for {self.num_iters:,} iterations.")
 
         self.model.train()
 
@@ -222,12 +256,11 @@ class Trainer:
         self.save_checkpoint(is_best=False)
         logger.info("Training run completed successfully.")
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def validate(self):
         self.model.eval()
 
-        avg_psnr = 0.0
-        avg_ssim = 0.0
+        avg_loss, avg_psnr, avg_ssim = 0.0, 0.0, 0.0
 
         for i, batch in enumerate(self.val_dataloader):
             lr_img_tensor = batch["lr"].to(self.device, non_blocking=True)
@@ -235,9 +268,10 @@ class Trainer:
 
             with torch.autocast(device_type=self.device.split(":")[0], dtype=self.dtype, enabled=True):
                 sr_img_tensor = self.model(lr_img_tensor)
+                loss = self.loss_fn(sr_img_tensor, hr_img_tensor)
+                avg_loss += loss.item()
 
-            batch_psnr = 0.0
-            batch_ssim = 0.0
+            batch_psnr, batch_ssim = 0.0, 0.0
             batch_size = sr_img_tensor.size(0)
 
             for j in range(batch_size):
@@ -259,12 +293,33 @@ class Trainer:
             avg_psnr += batch_psnr / batch_size
             avg_ssim += batch_ssim / batch_size
 
+            if config.USE_WANDB and i == 0:
+                self._log_images(
+                    lr_img_tensor=lr_img_tensor[0],
+                    sr_img_tensor=sr_img_tensor[0],
+                    hr_img_tensor=hr_img_tensor[0],
+                )
+
         self.model.train()
 
+        avg_loss /= len(self.val_dataloader)
         avg_psnr /= len(self.val_dataloader)
         avg_ssim /= len(self.val_dataloader)
 
-        logger.info(f"Validation result | Iteration: {self.current_iter} | PSNR: {avg_psnr:.2f} | SSIM: {avg_ssim:.4f}")
+        logger.info(
+            f"Validation | Iter: {self.current_iter} | Loss: {avg_loss:.4f} | PSNR: {avg_psnr:.2f} | SSIM: {avg_ssim:.4f}"
+        )
+
+        if config.USE_WANDB:
+            wandb.log(
+                {
+                    "val/loss": avg_loss,
+                    "val/psnr": avg_psnr,
+                    "val/ssim": avg_ssim,
+                    "val/iteration": self.current_iter,
+                },
+                step=self.current_iter,
+            )
 
         if avg_psnr > self.best_psnr:
             self.best_psnr = avg_psnr
@@ -279,24 +334,20 @@ class Trainer:
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
             "scaler": self.scaler.state_dict() if self.scaler else None,
+            "wandb_id": wandb.run.id if wandb.run else None,
         }
 
         if is_best:
-            best_model_dir = self.checkpoints_dir_path / "best"
-            best_model_dir.mkdir(parents=True, exist_ok=True)
-
-            save_file(model_state, best_model_dir / "model.safetensors")
-            torch.save(train_state, best_model_dir / "state.pth")
-
+            save_dir = self.checkpoints_dir_path / "best"
+            save_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"[Checkpoint] New best model saved (PSNR: {self.best_psnr:.2f} dB).")
         else:
-            current_iter_dir = self.checkpoints_dir_path / f"iter_{self.current_iter}"
-            current_iter_dir.mkdir(parents=True, exist_ok=True)
+            save_dir = self.checkpoints_dir_path / f"iter_{self.current_iter}"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[Checkpoint] Checkpoint saved to '{save_dir}'.")
 
-            save_file(model_state, current_iter_dir / "model.safetensors")
-            torch.save(train_state, current_iter_dir / "state.pth")
-
-            logger.info(f"[Checkpoint] Checkpoint saved to '{current_iter_dir}'")
+        save_file(model_state, save_dir / "model.safetensors")
+        torch.save(train_state, save_dir / "state.pth")
 
     def load_checkpoint(self, checkpoint_dir_path: Path) -> None:
         model_path = checkpoint_dir_path / "model.safetensors"
