@@ -313,7 +313,7 @@ class SwinIR(nn.Module):
 
         if in_channels == 3:
             rgb_mean = (0.4488, 0.4371, 0.4040)
-            self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
+            self.mean = torch.tensor(rgb_mean).view(1, 3, 1, 1)
         else:
             self.mean = torch.zeros(1, in_channels, 1, 1) + 0.5
 

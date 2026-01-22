@@ -242,6 +242,8 @@ class Trainer:
                 if self.current_iter % self.val_freq == 0 and self.current_iter != 0:
                     logger.info("Validation started (it may take a few minutes)...")
                     self.validate()
+
+                if self.current_iter % config.SAVE_CHECKPOINT_FREQ == 0 and self.current_iter != 0:
                     self.save_checkpoint(is_best=False)
 
             self.current_iter += 1

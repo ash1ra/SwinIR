@@ -1,13 +1,13 @@
 from pathlib import Path
 
 import torch
-import wandb
 from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
 
 import config
+import wandb
 from dataset import SRDataset
 from models import SwinIR
 from trainer import Trainer
@@ -135,6 +135,9 @@ def main():
     except KeyboardInterrupt:
         logger.info("Training interrupted by used. Saving last state...")
         trainer.save_checkpoint(is_best=False)
+    finally:
+        if config.USE_WANDB:
+            wandb.finish()
 
 
 if __name__ == "__main__":
