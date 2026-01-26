@@ -44,19 +44,19 @@ VAL_PREFETCH_FACTOR = 2
 TRAIN_DATASET_PATH = Path("data/DF2K")
 VAL_DATASET_PATH = Path("data/DIV2K_val")
 TEST_DATASET_PATHS = [
-    Path("data/Set5.txt"),
-    Path("data/Set14.txt"),
-    Path("data/BSDS100.txt"),
-    Path("data/Urban100.txt"),
-    Path("data/Manga109.txt"),
+    Path("data/Set5"),
+    Path("data/Set14"),
+    Path("data/BSDS100"),
+    Path("data/Urban100"),
+    Path("data/Manga109"),
 ]
 
 # Checkpoint settings
 LOAD_BEST_CHECKPOINT = False
-LOAD_CHECKPOINT = False
+LOAD_CHECKPOINT = True
 
 BEST_CHECKPOINT_DIR_PATH = Path("checkpoints/best")
-CHECKPOINT_DIR_PATH = Path("checkpoints/iter_0")
+CHECKPOINT_DIR_PATH = Path("checkpoints/iter_100000")
 
 # WandB settings
 USE_WANDB = True

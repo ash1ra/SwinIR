@@ -10,6 +10,8 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+import config
+
 
 def cubic(x: np.ndarray) -> np.ndarray:
     abs_x = np.abs(x)
@@ -188,12 +190,25 @@ def prepare_data(
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         list(tqdm(executor.map(worker, img_paths), total=len(img_paths), desc="Processing images..."))
 
-    print(f"[Data] Processing completed. Output saved to '{output_data_path}'.")
+    print(f"[Data] Processing completed. Output saved to '{output_data_path}'.\n")
 
 
 if __name__ == "__main__":
     prepare_data(
-        input_data_path=Path("data/DIV2K_val.txt"),
-        output_data_path=Path("data/DIV2K_val"),
-        scaling_factor=4,
+        input_data_path=config.TRAIN_DATASET_PATH.with_suffix(".txt"),
+        output_data_path=config.TRAIN_DATASET_PATH,
+        scaling_factor=config.SCALING_FACTOR,
     )
+
+    prepare_data(
+        input_data_path=config.VAL_DATASET_PATH.with_suffix(".txt"),
+        output_data_path=config.VAL_DATASET_PATH,
+        scaling_factor=config.SCALING_FACTOR,
+    )
+
+    for test_dataset_path in config.TEST_DATASET_PATHS:
+        prepare_data(
+            input_data_path=test_dataset_path.with_suffix(".txt"),
+            output_data_path=test_dataset_path,
+            scaling_factor=config.SCALING_FACTOR,
+        )
