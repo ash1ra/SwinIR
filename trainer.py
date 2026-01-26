@@ -375,16 +375,7 @@ class Trainer:
             self.current_iter = state["current_iter"]
             self.best_psnr = state["best_psnr"]
 
-            try:
-                self.optimizer.load_state_dict(state["optimizer"])
-
-                for param_group in self.optimizer.param_groups:
-                    param_group["lr"] = config.LEARNING_RATE
-                    if "betas" in param_group:
-                        param_group["betas"] = config.ADAM_BETAS
-
-            except Exception:
-                logger.warning("[Checkpoint] Optimizer type mismatch. Skipping the optimizer parameter loading.")
+            self.optimizer.load_state_dict(state["optimizer"])
 
             if self.scheduler and state["scheduler"]:
                 self.scheduler.load_state_dict(state["scheduler"])
