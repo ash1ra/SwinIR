@@ -10,6 +10,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 import config
 import wandb
@@ -159,10 +160,9 @@ class Trainer:
         logger.info(
             (
                 f"Iter: [{self.current_iter:>6d}/{self.num_iters}] "
-                f"({format_time(self.avg_iter_time)} / {elapsed_time} / {remaining_time})"
+                f"({format_time(self.avg_iter_time)} / {elapsed_time} / {remaining_time}) | Loss: {loss:.4f} | LR: {current_lr:.2e}"
             )
         )
-        logger.info(f"Loss: {loss:.4f} | LR: {current_lr:.2e}")
 
         if config.USE_WANDB:
             wandb.log(
@@ -223,48 +223,15 @@ class Trainer:
 
         return loss.item()
 
-    def train(self):
-        self._log_model_info()
-
-        if self.current_iter > 0:
-            logger.info(
-                f"Resuming training on {self.device} device from iteration {self.current_iter:,} / {self.num_iters:,}."
-            )
-        else:
-            logger.info(f"Starting training on {self.device} device for {self.num_iters:,} iterations.")
-
-        self.model.train()
-
-        for batch in self.train_dataloader:
-            with self.timer:
-                loss = self._train_step(batch)
-
-                self.current_iter += 1
-                self._update_avg_time()
-
-                if self.current_iter % self.val_freq == 0 and self.current_iter != 0:
-                    logger.info("Validation started (it may take a few minutes)...")
-                    self.validate()
-
-                if self.current_iter % config.SAVE_CHECKPOINT_FREQ == 0 and self.current_iter != 0:
-                    self.save_checkpoint(is_best=False)
-
-            if self.current_iter % self.log_freq == 0:
-                self._log_progress(loss)
-
-            if self.current_iter >= self.num_iters:
-                break
-
-        self.save_checkpoint(is_best=False)
-        logger.info("Training run completed successfully.")
-
     @torch.inference_mode()
     def validate(self):
         self.model.eval()
 
         avg_loss, avg_psnr, avg_ssim = 0.0, 0.0, 0.0
 
-        for i, batch in enumerate(self.val_dataloader):
+        for i, batch in tqdm(
+            enumerate(self.val_dataloader), desc="Validating...", total=len(self.val_dataloader), leave=False
+        ):
             lr_img_tensor = batch["lr"].to(self.device, non_blocking=True)
             hr_img_tensor = batch["hr"].to(self.device, non_blocking=True)
 
@@ -326,6 +293,41 @@ class Trainer:
         if avg_psnr > self.best_psnr:
             self.best_psnr = avg_psnr
             self.save_checkpoint(is_best=True)
+
+    def train(self):
+        self._log_model_info()
+
+        if self.current_iter > 0:
+            logger.info(
+                f"Resuming training on {self.device} device from iteration {self.current_iter:,} / {self.num_iters:,}."
+            )
+        else:
+            logger.info(f"Starting training on {self.device} device for {self.num_iters:,} iterations.")
+
+        self.model.train()
+
+        for batch in self.train_dataloader:
+            with self.timer:
+                loss = self._train_step(batch)
+
+                self.current_iter += 1
+                self._update_avg_time()
+
+                if self.current_iter % self.val_freq == 0 and self.current_iter != 0:
+                    logger.info("Validation started (it may take a few minutes)...")
+                    self.validate()
+
+                if self.current_iter % config.SAVE_CHECKPOINT_FREQ == 0 and self.current_iter != 0:
+                    self.save_checkpoint(is_best=False)
+
+            if self.current_iter % self.log_freq == 0:
+                self._log_progress(loss)
+
+            if self.current_iter >= self.num_iters:
+                break
+
+        self.save_checkpoint(is_best=False)
+        logger.info("Training run completed successfully.")
 
     def save_checkpoint(self, is_best: bool) -> None:
         model_state = self.model.state_dict()

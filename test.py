@@ -2,6 +2,7 @@ import torch
 from safetensors.torch import load_file
 from torch import nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 import config
 from dataset import SRDataset
@@ -12,6 +13,7 @@ from utils import calculate_psnr, calculate_ssim, logger
 @torch.inference_mode()
 def test(
     data_loader: DataLoader,
+    dataset_name: str,
     model: nn.Module,
     loss_fn: nn.Module,
     scaling_factor: config.ScalingFactor,
@@ -22,7 +24,7 @@ def test(
 
     avg_loss, avg_psnr, avg_ssim = 0.0, 0.0, 0.0
 
-    for i, batch in enumerate(data_loader):
+    for batch in tqdm(data_loader, desc=dataset_name, leave=False):
         lr_img_tensor = batch["lr"].to(device, non_blocking=True)
         hr_img_tensor = batch["hr"].to(device, non_blocking=True)
 
@@ -103,6 +105,7 @@ def main() -> None:
 
         test_loss, test_psnr, test_ssim = test(
             data_loader=data_loader,
+            dataset_name=test_dataset_path.name,
             model=model,
             loss_fn=loss_fn,
             scaling_factor=config.SCALING_FACTOR,
