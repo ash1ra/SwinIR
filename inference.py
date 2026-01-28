@@ -5,9 +5,11 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.v2 as transforms
+from PIL import Image, ImageDraw, ImageFont
 from safetensors.torch import load_file
 from torch import Tensor, nn
 from torchvision.io import ImageReadMode, decode_image
+from torchvision.transforms import InterpolationMode
 from torchvision.utils import save_image
 from tqdm import tqdm
 
@@ -16,60 +18,144 @@ from models import SwinIR
 from utils import logger
 
 
+def create_lr_and_hr_imgs(input_img_tensor: Tensor, scaling_factor: int) -> tuple[Tensor, Tensor]:
+    num_channels, input_img_height, input_img_width = input_img_tensor.shape
+
+    lr_img_height = input_img_height // scaling_factor
+    lr_img_width = input_img_width // scaling_factor
+
+    hr_img_height = lr_img_height * scaling_factor
+    hr_img_width = lr_img_width * scaling_factor
+
+    hr_img_tensor = input_img_tensor[:, :hr_img_height, :hr_img_width]
+
+    lr_img_tensor = transforms.Resize(
+        (lr_img_height, lr_img_width),
+        interpolation=InterpolationMode.BICUBIC,
+        antialias=True,
+    )(hr_img_tensor)
+
+    return lr_img_tensor, hr_img_tensor
+
+
+def save_comparison_img(
+    lr_upscaled_img_tensor: Tensor,
+    sr_img_tensor: Tensor,
+    hr_img_tensor: Tensor,
+    output_path: Path,
+    vertical_comparison: bool = False,
+) -> None:
+    comparison_img_path = output_path.parent / f"{output_path.stem}_comparison.png"
+
+    logger.info("Creating comparison image...")
+
+    img_tensors = [lr_upscaled_img_tensor, sr_img_tensor, hr_img_tensor]
+    img_labels = ["Bicubic", "SwinIR", "Original"]
+
+    imgs = [transforms.ToPILImage()(img_tensor.float().cpu().clamp(0, 1)) for img_tensor in img_tensors]
+
+    img_width, img_height = imgs[0].size
+    header_height = 50
+
+    if vertical_comparison:
+        canvas_width = img_width
+        canvas_height = (img_height + header_height) * 3
+    else:
+        canvas_width = img_width * 3
+        canvas_height = img_height + header_height
+
+    canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf", 24)
+    except OSError:
+        font = ImageFont.load_default()
+
+    for i, (img, label) in enumerate(zip(imgs, img_labels)):
+        label_bbox = draw.textbbox((0, 0), label, font=font)
+        text_width = label_bbox[2] - label_bbox[0]
+        text_height = label_bbox[3] - label_bbox[1]
+
+        if vertical_comparison:
+            x_offset = 0
+            y_offset = i * (img_height + header_height)
+
+            text_x = (img_width // 2) - (text_width // 2)
+            text_y = y_offset + (header_height - text_height) // 2 - 5
+
+            img_y_pos = y_offset + header_height
+        else:
+            x_offset = i * img_width
+            y_offset = 0
+
+            text_x = x_offset + (img_width // 2) - (text_width // 2)
+            text_y = (header_height - text_height) // 2 - 5
+
+            img_y_pos = header_height
+
+        canvas.paste(img, (x_offset, img_y_pos))
+        draw.text((text_x, text_y), label, fill=(0, 0, 0), font=font)
+
+    logger.info(f"Saving comparison result to '{comparison_img_path}'...")
+    canvas.save(comparison_img_path)
+
+
 def tiled_inference(
     model: nn.Module,
-    input_img_tensor: Tensor,
+    lr_img_tensor: Tensor,
     scaling_factor: int,
     tile_size: int,
     tile_overlap: int,
     device: config.DeviceType,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    num_channels, input_img_height, input_img_width = input_img_tensor.shape
+    num_channels, lr_img_height, lr_img_width = lr_img_tensor.shape
 
-    output_img_height = input_img_height * scaling_factor
-    output_img_width = input_img_width * scaling_factor
-    output_shape = (num_channels, output_img_height, output_img_width)
+    sr_img_height = lr_img_height * scaling_factor
+    sr_img_width = lr_img_width * scaling_factor
+    sr_img_shape = (num_channels, sr_img_height, sr_img_width)
 
-    output_accumulated_values = torch.zeros(output_shape, dtype=torch.float32, device="cpu")
-    output_weight_map = torch.zeros(output_shape, dtype=torch.float32, device="cpu")
+    sr_accumulated_values = torch.zeros(sr_img_shape, dtype=torch.float32, device="cpu")
+    sr_weight_map = torch.zeros(sr_img_shape, dtype=torch.float32, device="cpu")
 
     stride = tile_size - tile_overlap
-    height_idx_list = list(range(0, input_img_height - tile_size, stride)) + [input_img_height - tile_size]
-    width_idx_list = list(range(0, input_img_width - tile_size, stride)) + [input_img_width - tile_size]
+    height_steps = list(range(0, lr_img_height - tile_size, stride)) + [lr_img_height - tile_size]
+    width_steps = list(range(0, lr_img_width - tile_size, stride)) + [lr_img_width - tile_size]
 
-    if input_img_height < tile_size:
-        height_idx_list = height_idx_list[0]
+    if lr_img_height < tile_size:
+        height_steps = [0]
 
-    if input_img_width < tile_size:
-        width_idx_list = width_idx_list[0]
+    if lr_img_width < tile_size:
+        width_steps = [0]
 
-    pbar = tqdm(total=len(height_idx_list) * len(width_idx_list), desc="Processing tiles", leave=False)
+    pbar = tqdm(total=len(height_steps) * len(width_steps), desc="Processing tiles", leave=False)
 
-    for height_idx in height_idx_list:
-        for width_idx in width_idx_list:
-            height_end = min(height_idx + tile_size, input_img_height)
-            width_end = min(width_idx + tile_size, input_img_width)
-            height_start = max(0, height_end - tile_size)
-            width_start = max(0, width_end - tile_size)
+    for height_step in height_steps:
+        for width_step in width_steps:
+            lr_height_end = min(height_step + tile_size, lr_img_height)
+            lr_width_end = min(width_step + tile_size, lr_img_width)
+            lr_height_start = max(0, lr_height_end - tile_size)
+            lr_width_start = max(0, lr_width_end - tile_size)
 
-            in_patch = input_img_tensor[:, height_start:height_end, width_start:width_end].to(device)
+            lr_img_patch = lr_img_tensor[:, lr_height_start:lr_height_end, lr_width_start:lr_width_end]
+            lr_img_patch = lr_img_patch.to(device)
 
             with torch.autocast(device_type=device.split(":")[0], dtype=dtype, enabled=True):
-                out_patch = model(in_patch.unsqueeze(dim=0)).squeeze(dim=0).cpu()
+                sr_img_patch = model(lr_img_patch.unsqueeze(dim=0)).squeeze(dim=0).cpu()
 
-            out_height_start = height_start * scaling_factor
-            out_height_end = height_end * scaling_factor
-            out_width_start = width_start * scaling_factor
-            out_width_end = width_end * scaling_factor
+            sr_height_end = lr_height_end * scaling_factor
+            sr_width_end = lr_width_end * scaling_factor
+            sr_height_start = lr_height_start * scaling_factor
+            sr_width_start = lr_width_start * scaling_factor
 
-            output_accumulated_values[:, out_height_start:out_height_end, out_width_start:out_width_end] += out_patch
-            output_weight_map[:, out_height_start:out_height_end, out_width_start:out_width_end] += 1.0
+            sr_accumulated_values[:, sr_height_start:sr_height_end, sr_width_start:sr_width_end] += sr_img_patch
+            sr_weight_map[:, sr_height_start:sr_height_end, sr_width_start:sr_width_end] += 1.0
 
             pbar.update(1)
     pbar.close()
 
-    return output_accumulated_values.div_(output_weight_map)
+    return sr_accumulated_values.div_(sr_weight_map)
 
 
 @torch.inference_mode()
@@ -82,6 +168,8 @@ def inference(
     dtype: torch.dtype = torch.bfloat16,
     tile_size: Optional[int] = None,
     tile_overlap: int = 32,
+    create_comparison: bool = False,
+    vertical_comparison: bool = False,
 ) -> None:
     model.eval()
 
@@ -99,14 +187,19 @@ def inference(
     input_img_tensor = decode_image(str(input_img_path), mode=ImageReadMode.RGB)
     input_img_tensor = transforms.ToDtype(dtype=dtype, scale=True)(input_img_tensor)
 
-    logger.info(f"Image loaded ({input_img_tensor.shape[2]}x{input_img_tensor.shape[1]})")
+    logger.info(f"Image loaded ({input_img_tensor.shape[2]}x{input_img_tensor.shape[1]}).")
 
-    if tile_size is not None:
+    if create_comparison:
+        lr_img_tensor, hr_img_tensor = create_lr_and_hr_imgs(input_img_tensor, scaling_factor=scaling_factor)
+    else:
+        lr_img_tensor = input_img_tensor
+
+    if tile_size:
         logger.info(f"Mode: Tiling Inference | Tile size: {tile_size} | Overlap: {tile_overlap}.")
 
-        output_img_tensor = tiled_inference(
+        sr_img_tensor = tiled_inference(
             model=model,
-            input_img_tensor=input_img_tensor,
+            lr_img_tensor=lr_img_tensor,
             scaling_factor=scaling_factor,
             tile_size=tile_size,
             tile_overlap=tile_overlap,
@@ -116,25 +209,40 @@ def inference(
     else:
         logger.info("Mode: Full Image Inference (No Tiling).")
 
-        input_img_tensor = input_img_tensor.to(device)
-        input_img_height, input_img_width = input_img_tensor.shape[1], input_img_tensor.shape[2]
+        lr_img_tensor = lr_img_tensor.to(device)
+        lr_img_height, lr_img_width = lr_img_tensor.shape[1], lr_img_tensor.shape[2]
 
-        padding_right = (config.WINDOW_SIZE - (input_img_width % config.WINDOW_SIZE)) % config.WINDOW_SIZE
-        padding_bottom = (config.WINDOW_SIZE - (input_img_height % config.WINDOW_SIZE)) % config.WINDOW_SIZE
+        padding_right = (config.WINDOW_SIZE - (lr_img_width % config.WINDOW_SIZE)) % config.WINDOW_SIZE
+        padding_bottom = (config.WINDOW_SIZE - (lr_img_height % config.WINDOW_SIZE)) % config.WINDOW_SIZE
 
-        input_img_tensor_padded = F.pad(input_img_tensor, pad=(0, padding_right, 0, padding_bottom), mode="reflect")
+        lr_img_tensor_padded = F.pad(lr_img_tensor, pad=(0, padding_right, 0, padding_bottom), mode="reflect")
 
         with torch.autocast(device_type=device.split(":")[0], dtype=dtype, enabled=True):
-            output_img_tensor_padded = model(input_img_tensor_padded.unsqueeze(dim=0)).squeeze(dim=0)
+            sr_img_tensor_padded = model(lr_img_tensor_padded.unsqueeze(dim=0)).squeeze(dim=0)
 
-        output_img_tensor = output_img_tensor_padded[
-            :, : input_img_height * scaling_factor, : input_img_width * scaling_factor
-        ]
+        sr_img_tensor = sr_img_tensor_padded[:, : lr_img_height * scaling_factor, : lr_img_width * scaling_factor]
 
-    output_img_tensor.clamp_(0, 1)
+    sr_img_tensor.clamp_(0, 1)
 
     logger.info(f"Saving result to '{output_img_path}'...")
-    save_image(output_img_tensor, output_img_path, format="PNG")
+    save_image(sr_img_tensor, output_img_path, format="PNG")
+
+    if create_comparison:
+        _, hr_img_height, hr_img_width = hr_img_tensor.shape
+
+        lr_upscaled_img_tensor = transforms.Resize(
+            (hr_img_height, hr_img_width),
+            interpolation=InterpolationMode.BICUBIC,
+            antialias=True,
+        )(lr_img_tensor)
+
+        save_comparison_img(
+            lr_upscaled_img_tensor=lr_upscaled_img_tensor,
+            sr_img_tensor=sr_img_tensor,
+            hr_img_tensor=hr_img_tensor,
+            output_path=output_img_path,
+            vertical_comparison=vertical_comparison,
+        )
 
 
 def main() -> None:
@@ -146,6 +254,8 @@ def main() -> None:
         "-ts", "--tile_size", type=int, default=None, help="Tile size (e.g., 512). None = processing without tiling"
     )
     parser.add_argument("-to", "--tile_overlap", type=int, default=32, help="Overlapping pixels between tiles")
+    parser.add_argument("-c", "--comparison", action="store_true", help="Create comparison image")
+    parser.add_argument("-v", "--vertical", action="store_true", help="Stack comparison images vertically")
     args = parser.parse_args()
 
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -187,6 +297,8 @@ def main() -> None:
         dtype=torch.bfloat16,
         tile_size=args.tile_size,
         tile_overlap=args.tile_overlap,
+        create_comparison=args.comparison,
+        vertical_comparison=args.vertical,
     )
 
 
