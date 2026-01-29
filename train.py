@@ -50,7 +50,7 @@ def main():
 
     val_dataloader = DataLoader(
         dataset=val_dataset,
-        batch_size=config.VAL_BATCH_SIZE,
+        batch_size=1,
         shuffle=False,
         num_workers=config.VAL_NUM_WORKERS,
         pin_memory=True if device == "cuda" else False,
@@ -122,6 +122,7 @@ def main():
         num_iters=config.NUM_ITERATIONS,
         val_freq=config.VAL_FREQ,
         log_freq=config.LOG_FREQ,
+        accumulation_steps=config.EFFECTIVE_BATCH_SIZE // config.TRAIN_BATCH_SIZE,
         scheduler=scheduler,
         device=device,
         dtype=torch.bfloat16,

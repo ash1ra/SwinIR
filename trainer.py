@@ -30,6 +30,7 @@ class Trainer:
         num_iters: int,
         val_freq: int = 5000,
         log_freq: int = 100,
+        accumulation_steps: int = 1,
         scheduler: Optional[LRScheduler] = None,
         scaler: Optional[GradScaler] = None,
         device: config.DeviceType = "cpu",
@@ -44,6 +45,7 @@ class Trainer:
         self.num_iters = num_iters
         self.val_freq = val_freq
         self.log_freq = log_freq
+        self.accumulation_steps = accumulation_steps
         self.scheduler = scheduler
         self.scaler = scaler
         self.device = device
@@ -114,8 +116,15 @@ class Trainer:
         logger.info("Hyperparameters")
         logger.info(dash_line)
         logger.info(f"Scaling Factor: x{self.scaling_factor}")
-        logger.info(f"Patch Size: {config.PATCH_SIZE}x{config.PATCH_SIZE}")
-        logger.info(f"Batch Size: {config.TRAIN_BATCH_SIZE}")
+        logger.info(f"Patch Size: {config.PATCH_SIZE}")
+
+        if config.EFFECTIVE_BATCH_SIZE == config.TRAIN_BATCH_SIZE:
+            logger.info(f"Batch Size: {config.TRAIN_BATCH_SIZE}")
+        else:
+            logger.info(
+                f"Effective Batch Size: {config.EFFECTIVE_BATCH_SIZE} ({config.TRAIN_BATCH_SIZE} * {config.EFFECTIVE_BATCH_SIZE // config.TRAIN_BATCH_SIZE})"
+            )
+
         logger.info(f"Total iteration: {self.num_iters:,}")
         logger.info(f"Loss Function: {self.loss_fn.__class__.__name__}")
         logger.info(f"Optimizer: {self.optimizer.__class__.__name__}")
@@ -146,10 +155,12 @@ class Trainer:
     def _update_avg_time(self) -> None:
         alpha = 0.1
 
+        iter_duration = self.timer.last_iter_duration * self.accumulation_steps
+
         if self.avg_iter_time == 0.0:
-            self.avg_iter_time = self.timer.last_iter_duration
+            self.avg_iter_time = iter_duration
         else:
-            self.avg_iter_time = (1 - alpha) * self.avg_iter_time + alpha * self.timer.last_iter_duration
+            self.avg_iter_time = (1 - alpha) * self.avg_iter_time + alpha * iter_duration
 
     def _log_progress(self, loss: float) -> None:
         elapsed_time = format_time(self.timer.get_elapsed_time())
@@ -197,31 +208,40 @@ class Trainer:
             step=self.current_iter,
         )
 
-    def _train_step(self, batch: dict[str, Tensor]) -> float:
+    def _train_step(self, batch: dict[str, Tensor], is_accumulating: bool = False) -> float:
         lr_img_tensor = batch["lr"].to(self.device, non_blocking=True)
         hr_img_tensor = batch["hr"].to(self.device, non_blocking=True)
-
-        self.optimizer.zero_grad()
 
         with torch.autocast(device_type=self.device.split(":")[0], dtype=self.dtype, enabled=True):
             sr_img_tensor = self.model(lr_img_tensor)
             loss = self.loss_fn(sr_img_tensor, hr_img_tensor)
 
+            if self.accumulation_steps > 1:
+                loss /= self.accumulation_steps
+
         if self.scaler:
             self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            clip_grad_norm_(self.model.parameters(), max_norm=config.GRADIENT_CLIPPING_NORM)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
         else:
             loss.backward()
+
+        if not is_accumulating:
+            if self.scaler:
+                self.scaler.unscale_(self.optimizer)
+
             clip_grad_norm_(self.model.parameters(), max_norm=config.GRADIENT_CLIPPING_NORM)
-            self.optimizer.step()
 
-        if self.scheduler:
-            self.scheduler.step()
+            if self.scaler:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
 
-        return loss.item()
+            self.optimizer.zero_grad()
+
+            if self.scheduler:
+                self.scheduler.step()
+
+        return loss.item() * self.accumulation_steps if self.accumulation_steps > 1 else loss.item()
 
     @torch.inference_mode()
     def validate(self):
@@ -306,22 +326,28 @@ class Trainer:
 
         self.model.train()
 
+        batch_counter = 0
+
         for batch in self.train_dataloader:
             with self.timer:
-                loss = self._train_step(batch)
+                batch_counter += 1
+                is_accumulating = batch_counter % self.accumulation_steps != 0
 
-                self.current_iter += 1
-                self._update_avg_time()
+                loss = self._train_step(batch, is_accumulating)
 
-                if self.current_iter % self.val_freq == 0 and self.current_iter != 0:
-                    logger.info("Validation started (it may take a few minutes)...")
-                    self.validate()
+                if not is_accumulating:
+                    self.current_iter += 1
+                    self._update_avg_time()
 
-                if self.current_iter % config.SAVE_CHECKPOINT_FREQ == 0 and self.current_iter != 0:
-                    self.save_checkpoint(is_best=False)
+                    if self.current_iter % self.val_freq == 0 and self.current_iter != 0:
+                        logger.info("Validation started (it may take a few minutes)...")
+                        self.validate()
 
-            if self.current_iter % self.log_freq == 0:
-                self._log_progress(loss)
+                    if self.current_iter % config.SAVE_CHECKPOINT_FREQ == 0 and self.current_iter != 0:
+                        self.save_checkpoint(is_best=False)
+
+                    if self.current_iter % self.log_freq == 0:
+                        self._log_progress(loss)
 
             if self.current_iter >= self.num_iters:
                 break
